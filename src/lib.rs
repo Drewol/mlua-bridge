@@ -1,11 +1,7 @@
 extern crate proc_macro;
-use proc_macro::{Ident, TokenStream};
-use quote::{quote, ToTokens};
-use syn::{
-    parse::{Parse, ParseStream},
-    parse_macro_input, Attribute, DeriveInput, Expr, ImplItem, ItemImpl, PatType, ReturnType,
-    Signature, Token, Type,
-};
+use proc_macro::TokenStream;
+use quote::{format_ident, quote, ToTokens};
+use syn::{ImplItem, ItemImpl, PatType, ReturnType, Signature, Type};
 
 enum MluaReturnType {
     Void,
@@ -27,7 +23,7 @@ struct ExportedFn {
 }
 
 #[proc_macro_attribute]
-pub fn mlua_bridge(attr: TokenStream, mut item: TokenStream) -> TokenStream {
+pub fn mlua_bridge(_attr: TokenStream, item: TokenStream) -> TokenStream {
     //if function returns mlua result: map it to lua
     //      How to check for correct return type?
 
@@ -95,6 +91,7 @@ pub fn mlua_bridge(attr: TokenStream, mut item: TokenStream) -> TokenStream {
     let (fields, funcs): (Vec<_>, Vec<_>) = exported_fns.into_iter().partition(|x| x.is_field);
 
     let mut funcs_impl = quote! {};
+    let mut fields_impl = quote! {};
 
     for f in funcs {
         let name = f.sig.ident.clone();
@@ -118,20 +115,66 @@ pub fn mlua_bridge(attr: TokenStream, mut item: TokenStream) -> TokenStream {
         let args = quote! {#args_tup: #args_typ};
 
         let question = match f.ret {
-            MluaReturnType::Void => quote! {},
-            MluaReturnType::Primitive => quote! {},
+            MluaReturnType::Void | MluaReturnType::Primitive => quote! {},
             MluaReturnType::Result => quote! {?},
         };
 
-        let t = match f.takes_self {
-            TakesSelf::No => {
-                quote! {methods.add_function_mut(#name, |_lua, #args| Ok(Self::#self_name #args_tup)#question);}
-            }
-            TakesSelf::Yes => quote! {methods.add_method(#name, |_lua, s, #args| Ok(s.#self_name #args_tup)#question);},
-            TakesSelf::Mut => quote! {methods.add_method_mut(#name, |_lua, s, #args| Ok(s.#self_name #args_tup)#question);},
+        let method = match &f.takes_self {
+            TakesSelf::No => quote! {add_function_mut},
+            TakesSelf::Yes => quote! {add_method},
+            TakesSelf::Mut => quote! {add_method_mut},
+        };
+
+        let self_ident = match &f.takes_self {
+            TakesSelf::No => quote! {Self::},
+            TakesSelf::Yes | TakesSelf::Mut => quote! {s.},
+        };
+
+        let closure_def = match &f.takes_self {
+            TakesSelf::No => quote! { |_lua, #args| },
+            TakesSelf::Yes | TakesSelf::Mut => quote! { |_lua, s, #args| },
+        };
+
+        let t = quote! {
+            methods.#method(#name, #closure_def Ok(#self_ident #self_name #args_tup #question));
         };
 
         t.to_tokens(&mut funcs_impl);
+    }
+
+    for f in fields {
+        let name = f.sig.ident.clone();
+        let name = format_ident!("{}", name.to_string()[4..]);
+        let self_name = f.sig.ident.clone();
+        let name = quote! {stringify!(#name)};
+
+        let question = match &f.ret {
+            MluaReturnType::Void | MluaReturnType::Primitive => quote! {},
+            MluaReturnType::Result => quote! {?},
+        };
+
+        let self_ident = match &f.takes_self {
+            TakesSelf::No => quote! {Self::},
+            TakesSelf::Yes | TakesSelf::Mut => quote! {s.},
+        };
+
+        let t = match (&f.takes_self, &f.sig.ident.to_string().starts_with("set")) {
+            (TakesSelf::No, true) => quote! {
+                fields.add_field_function_set(#name, |_lua, _, v| Ok(#self_ident #self_name(v)#question));
+            },
+            (TakesSelf::No, false) => quote! {
+                fields.add_field_function_get(#name, |_lua, _| Ok(#self_ident #self_name()#question));
+            },
+            (_, true) => quote! {
+                fields.add_field_method_set(#name, |_lua, s, v| Ok(#self_ident #self_name(v)#question));
+
+            },
+            (_, false) => quote! {
+                fields.add_field_method_get(#name, |_lua, s| Ok(#self_ident #self_name()#question));
+            },
+        };
+
+        t.to_tokens(&mut fields_impl);
     }
 
     let item_ident = impl_item.self_ty.into_token_stream();
@@ -140,6 +183,10 @@ pub fn mlua_bridge(attr: TokenStream, mut item: TokenStream) -> TokenStream {
         impl ::mlua::UserData for #item_ident {
             fn add_methods<M: ::mlua::UserDataMethods<Self>>(methods: &mut M) {
                 #funcs_impl
+            }
+
+            fn add_fields<F: mlua::UserDataFields<Self>>(fields: &mut F) {
+                #fields_impl
             }
         }
     };
