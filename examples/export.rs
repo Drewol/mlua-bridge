@@ -1,8 +1,12 @@
-use mlua::AnyUserData;
+use mlua::{AnyUserData, AppDataRef};
 use mlua_bridge::mlua_bridge;
 
 struct Foo {
     bar: u32,
+}
+
+struct Bar {
+    name: &'static str,
 }
 
 #[mlua_bridge]
@@ -11,9 +15,10 @@ impl Foo {
         5
     }
 
-    fn custom_log(&self, msg: String) {
+    fn custom_log(&self, msg: String, context: AppDataRef<Bar>) {
         self.not_exported();
-        println!("From Lua: {msg}");
+        let ctx = context.name;
+        println!("[{ctx}] From Lua: {msg}");
     }
 
     fn set_static_value(v: u32) {
@@ -45,6 +50,7 @@ fn main() {
     lua.globals()
         .set("foo", Foo { bar: 5 })
         .expect("Failed to set lua global");
+    lua.set_app_data(Bar { name: "Foo" });
     lua.load(
         r#"
 x = foo.func_test();
