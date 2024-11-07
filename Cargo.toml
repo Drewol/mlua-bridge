@@ -1,7 +1,9 @@
 [package]
 name = "mlua-bridge"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+description = "Generate UserData implementations for mlua"
+license = "MIT"
 
 [lib]
 proc-macro = true
@@ -12,4 +14,4 @@ quote = "1.0.37"
 syn = { version = "2.0.86", features = ["full"] }
 
 [dev-dependencies]
-mlua = {version = "0.10", features = ["lua53", "vendored"]}
+mlua = { version = "0.10", features = ["lua53", "vendored"] }
