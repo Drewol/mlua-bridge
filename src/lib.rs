@@ -34,15 +34,9 @@ fn split_appdata_args(sig: &Signature) -> (Vec<PatType>, Vec<PatType>) {
             }
         })
         .cloned()
-        .partition(|a| {
-            if let Type::Path(p) = a.ty.as_ref() {
-                p.path
-                    .segments
-                    .iter()
-                    .any(|p| p.ident == "AppDataRefMut" || p.ident == "AppDataRef")
-            } else {
-                false
-            }
+        .partition(|a| match a.ty.as_ref() {
+            Type::Reference(_) => true,
+            _ => false,
         })
 }
 
@@ -141,15 +135,18 @@ pub fn mlua_bridge(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
         let rust_args = rust_args.iter().map(|x| x.pat.clone());
         let rust_args = quote! {(#(#rust_args),*)};
-
         let app_data = app_data.iter().map(|x| {
+            let Type::Reference(ref_type) = x.ty.as_ref() else {
+                unreachable!()
+            };
             let name = x.pat.to_token_stream();
-            let t = x.ty.to_token_stream();
-            if t.to_string().contains("AppDataRefMut") {
-                quote! {let #name: #t = _lua.app_data_mut().ok_or(mlua::Error::external("AppData not set"))?; }
+            let t = ref_type.elem.to_token_stream();
+            
+            if ref_type.mutability.is_some() {
+                quote! {let #name = &mut *_lua.app_data_mut::<#t>().ok_or(mlua::Error::external("AppData not set"))?; }
             }
             else {
-                quote! {let #name: #t = _lua.app_data_ref().ok_or(mlua::Error::external("AppData not set"))?; }
+                quote! {let #name = &*_lua.app_data_ref::<#t>().ok_or(mlua::Error::external("AppData not set"))?; }
             }
         });
 
