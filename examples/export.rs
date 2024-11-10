@@ -15,6 +15,7 @@ struct Baz {
 
 #[mlua_bridge]
 impl Foo {
+    const X: i32 = 100;
     fn func_test() -> u32 {
         5
     }

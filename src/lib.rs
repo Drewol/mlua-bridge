@@ -53,13 +53,14 @@ pub fn mlua_bridge(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let impl_item = syn::parse_macro_input!(impl_item as ItemImpl);
 
     let mut fns = vec![];
+    let mut consts = vec![];
 
     for ele in impl_item.items {
-        let ImplItem::Fn(f) = ele else {
-            continue;
-        };
-
-        fns.push(f);
+        match ele {
+            ImplItem::Const(c) => consts.push(c),
+            ImplItem::Fn(f) => fns.push(f),
+            _ => continue,
+        }
     }
 
     let mut exported_fns = vec![];
@@ -96,7 +97,8 @@ pub fn mlua_bridge(_attr: TokenStream, item: TokenStream) -> TokenStream {
             })
             .unwrap_or(TakesSelf::No);
 
-        let is_field = matches!(&sig.ident.to_string()[..4], "get_" | "set_");
+        let fn_name = sig.ident.to_string();
+        let is_field = fn_name.len() > 4 &&  matches!(&fn_name[..4], "get_" | "set_");
 
         exported_fns.push(ExportedFn {
             ret,
@@ -215,6 +217,15 @@ pub fn mlua_bridge(_attr: TokenStream, item: TokenStream) -> TokenStream {
         };
 
         t.to_tokens(&mut fields_impl);
+    }
+
+
+    for c in consts {
+        let name = c.ident;
+        quote! {
+            fields.add_field_function_get(stringify!(#name), |_lua, _| Ok(Self::#name));
+        }
+        .to_tokens(&mut fields_impl);
     }
 
     let item_ident = impl_item.self_ty.into_token_stream();
