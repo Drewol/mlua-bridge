@@ -1,8 +1,11 @@
 extern crate proc_macro;
 
+use darling::{ast::NestedMeta, FromMeta};
+use ident_case::RenameRule;
 use proc_macro::TokenStream;
-use quote::{format_ident, quote, ToTokens};
-use syn::{ImplItem, ItemImpl, PatType, ReturnType, Signature, Type};
+use quote::{quote, ToTokens};
+use syn::{ImplItem, ItemImpl, PatType, ReturnType, Signature, Type, Visibility};
+
 
 enum MluaReturnType {
     Void,
@@ -23,6 +26,17 @@ struct ExportedFn {
     sig: Signature,
 }
 
+
+#[derive(Debug, FromMeta, Default)]
+struct ImplMeta {
+    #[darling(default)]
+    rename_funcs: RenameRule,
+    #[darling(default)]
+    rename_fields: RenameRule,
+    pub_only: Option<()>
+}
+
+
 fn split_appdata_args(sig: &Signature) -> (Vec<PatType>, Vec<PatType>) {
     sig.inputs
         .iter()
@@ -41,13 +55,18 @@ fn split_appdata_args(sig: &Signature) -> (Vec<PatType>, Vec<PatType>) {
 }
 
 #[proc_macro_attribute]
-pub fn mlua_bridge(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn mlua_bridge(attr: TokenStream, item: TokenStream) -> TokenStream {
     //TODO: if function returns mlua result: map it to lua
     //      How to check for correct return type?
 
     // if function argument is of AppDataRef(Mut) type: fetch it from lua appdata before calling function
     // if function is `get_` or `set_` and takes no arguments: map to field
     //TODO: collect type information along the way to generate luals definitions
+
+    //TODO: Write out proper darling error as they're more detailed
+    let impl_meta =  NestedMeta::parse_meta_list(attr.into()).expect("Failed to parse attribute");
+    let ImplMeta {  pub_only, rename_funcs, rename_fields } = ImplMeta::from_list(&impl_meta).expect("Failed to parse attribute");
+    let pub_only = pub_only.is_some();
 
     let impl_item = item.clone();
     let impl_item = syn::parse_macro_input!(impl_item as ItemImpl);
@@ -66,6 +85,10 @@ pub fn mlua_bridge(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut exported_fns = vec![];
 
     for ele in fns.into_iter() {
+        if pub_only && !matches!(ele.vis, Visibility::Public(_)) {
+            continue;
+        }
+
         let sig = ele.sig;
 
         let ret = match &sig.output {
@@ -114,10 +137,13 @@ pub fn mlua_bridge(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut fields_impl = quote! {};
 
     for f in funcs {
-        let name = f.sig.ident.clone();
+        let name = f.sig.ident.to_token_stream();
+
+        let name = rename_funcs.apply_to_field(name.to_string()).to_token_stream();
+
         let (app_data, lua_args) = split_appdata_args(&f.sig);
         let self_name = f.sig.ident;
-        let name = quote! {stringify!(#name)};
+        let name = quote! {#name};
         let rust_args: Vec<PatType> = f
             .sig
             .inputs
@@ -186,9 +212,9 @@ pub fn mlua_bridge(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     for f in fields {
         let name = f.sig.ident.clone();
-        let name = format_ident!("{}", name.to_string()[4..]);
+        let name = rename_fields.apply_to_field(format!("{}", &name.to_string()[4..]));
         let self_name = f.sig.ident.clone();
-        let name = quote! {stringify!(#name)};
+        let name = quote! {#name};
 
         let question = match &f.ret {
             MluaReturnType::Void | MluaReturnType::Primitive => quote! {},
@@ -223,7 +249,7 @@ pub fn mlua_bridge(_attr: TokenStream, item: TokenStream) -> TokenStream {
     for c in consts {
         let name = c.ident;
         quote! {
-            fields.add_field_function_get(stringify!(#name), |_lua, _| Ok(Self::#name));
+            fields.add_field_function_get(stringify!(#name)     , |_lua, _| Ok(Self::#name));
         }
         .to_tokens(&mut fields_impl);
     }
