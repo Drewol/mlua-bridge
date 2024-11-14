@@ -21,7 +21,7 @@ enum TakesSelf {
 struct ExportedFn {
     ret: MluaReturnType,
     takes_self: TakesSelf,
-    is_field: bool,
+    is_field: FieldType,
     sig: Signature,
 }
 
@@ -49,6 +49,13 @@ fn split_appdata_args(sig: &Signature) -> (Vec<PatType>, Vec<PatType>) {
             Type::Reference(_) => true,
             _ => false,
         })
+}
+
+#[derive(PartialEq)]
+enum FieldType {
+    None,
+    Get,
+    Set,
 }
 
 #[proc_macro_attribute]
@@ -121,7 +128,7 @@ pub fn mlua_bridge(attr: TokenStream, item: TokenStream) -> TokenStream {
             })
             .unwrap_or(TakesSelf::No);
 
-        let field_compat_args = sig
+        let field_incompat_args = sig
             .inputs
             .iter()
             .filter(|x| match x {
@@ -131,11 +138,18 @@ pub fn mlua_bridge(attr: TokenStream, item: TokenStream) -> TokenStream {
                     _ => true,
                 },
             })
-            .count()
-            <= 1;
+            .count();
         let fn_name = sig.ident.to_string();
-        let is_field =
-            field_compat_args && fn_name.len() > 4 && matches!(&fn_name[..4], "get_" | "set_");
+        let is_field = fn_name.len() > 4 && matches!(&fn_name[..4], "get_" | "set_");
+        let is_field = if is_field {
+            match &fn_name[..4] {
+                "get_" if field_incompat_args == 0 => FieldType::Get,
+                "set_" if field_incompat_args == 1 => FieldType::Set,
+                _ => FieldType::None,
+            }
+        } else {
+            FieldType::None
+        };
 
         exported_fns.push(ExportedFn {
             ret,
@@ -145,7 +159,9 @@ pub fn mlua_bridge(attr: TokenStream, item: TokenStream) -> TokenStream {
         });
     }
 
-    let (fields, funcs): (Vec<_>, Vec<_>) = exported_fns.into_iter().partition(|x| x.is_field);
+    let (fields, funcs): (Vec<_>, Vec<_>) = exported_fns
+        .into_iter()
+        .partition(|x| x.is_field != FieldType::None);
 
     let mut funcs_impl = quote! {};
     let mut fields_impl = quote! {};

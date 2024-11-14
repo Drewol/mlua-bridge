@@ -47,7 +47,11 @@ impl Foo {
         println!("Call to non exported function");
     }
 
-    pub fn get_invalid(x: &Incompatible) -> u32 {
+    pub fn get_invalid(x: &Incompatible, v: u32) -> u32 {
+        v + x.0
+    }
+
+    pub fn set_invalid(x: &Incompatible) -> u32 {
         x.0
     }
 }
