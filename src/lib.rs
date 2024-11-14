@@ -32,6 +32,7 @@ struct ImplMeta {
     #[darling(default)]
     rename_fields: RenameRule,
     pub_only: Option<()>,
+    no_auto_fields: Option<()>,
 }
 
 fn split_appdata_args(sig: &Signature) -> (Vec<PatType>, Vec<PatType>) {
@@ -73,6 +74,7 @@ pub fn mlua_bridge(attr: TokenStream, item: TokenStream) -> TokenStream {
         pub_only,
         rename_funcs,
         rename_fields,
+        no_auto_fields,
     } = ImplMeta::from_list(&impl_meta).expect("Failed to parse attribute");
     let pub_only = pub_only.is_some();
 
@@ -140,7 +142,9 @@ pub fn mlua_bridge(attr: TokenStream, item: TokenStream) -> TokenStream {
             })
             .count();
         let fn_name = sig.ident.to_string();
-        let is_field = fn_name.len() > 4 && matches!(&fn_name[..4], "get_" | "set_");
+        let is_field = no_auto_fields.is_none()
+            && fn_name.len() > 4
+            && matches!(&fn_name[..4], "get_" | "set_");
         let is_field = if is_field {
             match &fn_name[..4] {
                 "get_" if field_incompat_args == 0 => FieldType::Get,
