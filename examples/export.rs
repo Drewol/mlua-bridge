@@ -46,7 +46,13 @@ impl Foo {
     fn not_exported(&self) {
         println!("Call to non exported function");
     }
+
+    pub fn get_invalid(x: &Incompatible) -> u32 {
+        x.0
+    }
 }
+
+struct Incompatible(u32);
 
 fn main() {
     let lua = mlua::Lua::new();

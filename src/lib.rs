@@ -6,7 +6,6 @@ use proc_macro::TokenStream;
 use quote::{quote, ToTokens};
 use syn::{ImplItem, ItemImpl, PatType, ReturnType, Signature, Type, Visibility};
 
-
 enum MluaReturnType {
     Void,
     Primitive,
@@ -26,16 +25,14 @@ struct ExportedFn {
     sig: Signature,
 }
 
-
 #[derive(Debug, FromMeta, Default)]
 struct ImplMeta {
     #[darling(default)]
     rename_funcs: RenameRule,
     #[darling(default)]
     rename_fields: RenameRule,
-    pub_only: Option<()>
+    pub_only: Option<()>,
 }
-
 
 fn split_appdata_args(sig: &Signature) -> (Vec<PatType>, Vec<PatType>) {
     sig.inputs
@@ -64,8 +61,12 @@ pub fn mlua_bridge(attr: TokenStream, item: TokenStream) -> TokenStream {
     //TODO: collect type information along the way to generate luals definitions
 
     //TODO: Write out proper darling error as they're more detailed
-    let impl_meta =  NestedMeta::parse_meta_list(attr.into()).expect("Failed to parse attribute");
-    let ImplMeta {  pub_only, rename_funcs, rename_fields } = ImplMeta::from_list(&impl_meta).expect("Failed to parse attribute");
+    let impl_meta = NestedMeta::parse_meta_list(attr.into()).expect("Failed to parse attribute");
+    let ImplMeta {
+        pub_only,
+        rename_funcs,
+        rename_fields,
+    } = ImplMeta::from_list(&impl_meta).expect("Failed to parse attribute");
     let pub_only = pub_only.is_some();
 
     let impl_item = item.clone();
@@ -120,8 +121,21 @@ pub fn mlua_bridge(attr: TokenStream, item: TokenStream) -> TokenStream {
             })
             .unwrap_or(TakesSelf::No);
 
+        let field_compat_args = sig
+            .inputs
+            .iter()
+            .filter(|x| match x {
+                syn::FnArg::Receiver(_) => false,
+                syn::FnArg::Typed(pat_type) => match pat_type.ty.as_ref() {
+                    Type::Reference(_) => false,
+                    _ => true,
+                },
+            })
+            .count()
+            <= 1;
         let fn_name = sig.ident.to_string();
-        let is_field = fn_name.len() > 4 &&  matches!(&fn_name[..4], "get_" | "set_");
+        let is_field =
+            field_compat_args && fn_name.len() > 4 && matches!(&fn_name[..4], "get_" | "set_");
 
         exported_fns.push(ExportedFn {
             ret,
@@ -139,7 +153,9 @@ pub fn mlua_bridge(attr: TokenStream, item: TokenStream) -> TokenStream {
     for f in funcs {
         let name = f.sig.ident.to_token_stream();
 
-        let name = rename_funcs.apply_to_field(name.to_string()).to_token_stream();
+        let name = rename_funcs
+            .apply_to_field(name.to_string())
+            .to_token_stream();
 
         let (app_data, lua_args) = split_appdata_args(&f.sig);
         let self_name = f.sig.ident;
@@ -169,7 +185,7 @@ pub fn mlua_bridge(attr: TokenStream, item: TokenStream) -> TokenStream {
             };
             let name = x.pat.to_token_stream();
             let t = ref_type.elem.to_token_stream();
-            
+
             if ref_type.mutability.is_some() {
                 quote! {let #name = &mut *_lua.app_data_mut::<#t>().ok_or(mlua::Error::external("AppData not set"))?; }
             }
@@ -216,6 +232,44 @@ pub fn mlua_bridge(attr: TokenStream, item: TokenStream) -> TokenStream {
         let self_name = f.sig.ident.clone();
         let name = quote! {#name};
 
+        let (app_data, lua_args) = split_appdata_args(&f.sig);
+        if lua_args.len() > 1 {
+            panic!("Incalid field signature")
+        }
+
+        let value_name = lua_args
+            .get(0)
+            .map(|x| x.pat.clone().to_token_stream())
+            .unwrap_or_default();
+
+        let rust_args: Vec<PatType> = f
+            .sig
+            .inputs
+            .iter()
+            .cloned()
+            .filter_map(|x| match x {
+                syn::FnArg::Receiver(_) => None,
+                syn::FnArg::Typed(pat_type) => Some(pat_type),
+            })
+            .collect();
+        let rust_args = rust_args.iter().map(|x| x.pat.clone());
+        let rust_args = quote! {(#(#rust_args),*)};
+
+        let app_data = app_data.iter().map(|x| {
+            let Type::Reference(ref_type) = x.ty.as_ref() else {
+                unreachable!()
+            };
+            let name = x.pat.to_token_stream();
+            let t = ref_type.elem.to_token_stream();
+
+            if ref_type.mutability.is_some() {
+                quote! {let #name = &mut *_lua.app_data_mut::<#t>().ok_or(mlua::Error::external("AppData not set"))?; }
+            }
+            else {
+                quote! {let #name = &*_lua.app_data_ref::<#t>().ok_or(mlua::Error::external("AppData not set"))?; }
+            }
+        });
+
         let question = match &f.ret {
             MluaReturnType::Void | MluaReturnType::Primitive => quote! {},
             MluaReturnType::Result => quote! {?},
@@ -228,23 +282,34 @@ pub fn mlua_bridge(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         let t = match (&f.takes_self, &f.sig.ident.to_string().starts_with("set")) {
             (TakesSelf::No, true) => quote! {
-                fields.add_field_function_set(#name, |_lua, _, v| Ok(#self_ident #self_name(v)#question));
+                fields.add_field_function_set(#name, |_lua, _, #value_name| {
+                    #(#app_data)*
+
+                    Ok(#self_ident #self_name #rust_args #question)});
             },
             (TakesSelf::No, false) => quote! {
-                fields.add_field_function_get(#name, |_lua, _| Ok(#self_ident #self_name()#question));
+                fields.add_field_function_get(#name, |_lua, _| {
+                    #(#app_data)*
+
+                    Ok(#self_ident #self_name #rust_args #question)});
             },
             (_, true) => quote! {
-                fields.add_field_method_set(#name, |_lua, s, v| Ok(#self_ident #self_name(v)#question));
+                fields.add_field_method_set(#name, |_lua, s, #value_name| {
+                    #(#app_data)*
+
+                    Ok(#self_ident #self_name #rust_args #question)});
 
             },
             (_, false) => quote! {
-                fields.add_field_method_get(#name, |_lua, s| Ok(#self_ident #self_name()#question));
+                fields.add_field_method_get(#name, |_lua, s| {
+                    #(#app_data)*
+
+                    Ok(#self_ident #self_name #rust_args #question)});
             },
         };
 
         t.to_tokens(&mut fields_impl);
     }
-
 
     for c in consts {
         let name = c.ident;
