@@ -46,6 +46,7 @@ fn split_appdata_args(sig: &Signature) -> (Vec<PatType>, Vec<PatType>) {
             }
         })
         .cloned()
+        .filter(|p| p.pat.to_token_stream().to_string() != "lua")
         .partition(|a| match a.ty.as_ref() {
             Type::Reference(_) => true,
             _ => false,
@@ -203,14 +204,15 @@ pub fn mlua_bridge(attr: TokenStream, item: TokenStream) -> TokenStream {
             let Type::Reference(ref_type) = x.ty.as_ref() else {
                 unreachable!()
             };
+
             let name = x.pat.to_token_stream();
             let t = ref_type.elem.to_token_stream();
 
             if ref_type.mutability.is_some() {
-                quote! {let #name = &mut *_lua.app_data_mut::<#t>().ok_or(mlua::Error::external("AppData not set"))?; }
+                quote! {let #name = &mut *lua.app_data_mut::<#t>().ok_or(mlua::Error::external("AppData not set"))?; }
             }
             else {
-                quote! {let #name = &*_lua.app_data_ref::<#t>().ok_or(mlua::Error::external("AppData not set"))?; }
+                quote! {let #name = &*lua.app_data_ref::<#t>().ok_or(mlua::Error::external("AppData not set"))?; }
             }
         });
 
@@ -231,8 +233,8 @@ pub fn mlua_bridge(attr: TokenStream, item: TokenStream) -> TokenStream {
         };
 
         let closure_def = match &f.takes_self {
-            TakesSelf::No => quote! { |_lua, #args| },
-            TakesSelf::Yes | TakesSelf::Mut => quote! { |_lua, s, #args| },
+            TakesSelf::No => quote! { |lua, #args| },
+            TakesSelf::Yes | TakesSelf::Mut => quote! { |lua, s, #args| },
         };
 
         let t = quote! {
@@ -283,10 +285,10 @@ pub fn mlua_bridge(attr: TokenStream, item: TokenStream) -> TokenStream {
             let t = ref_type.elem.to_token_stream();
 
             if ref_type.mutability.is_some() {
-                quote! {let #name = &mut *_lua.app_data_mut::<#t>().ok_or(mlua::Error::external("AppData not set"))?; }
+                quote! {let #name = &mut *lua.app_data_mut::<#t>().ok_or(mlua::Error::external("AppData not set"))?; }
             }
             else {
-                quote! {let #name = &*_lua.app_data_ref::<#t>().ok_or(mlua::Error::external("AppData not set"))?; }
+                quote! {let #name = &*lua.app_data_ref::<#t>().ok_or(mlua::Error::external("AppData not set"))?; }
             }
         });
 
@@ -302,26 +304,26 @@ pub fn mlua_bridge(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         let t = match (&f.takes_self, &f.sig.ident.to_string().starts_with("set")) {
             (TakesSelf::No, true) => quote! {
-                fields.add_field_function_set(#name, |_lua, _, #value_name| {
+                fields.add_field_function_set(#name, |lua, _, #value_name| {
                     #(#app_data)*
 
                     Ok(#self_ident #self_name #rust_args #question)});
             },
             (TakesSelf::No, false) => quote! {
-                fields.add_field_function_get(#name, |_lua, _| {
+                fields.add_field_function_get(#name, |lua, _| {
                     #(#app_data)*
 
                     Ok(#self_ident #self_name #rust_args #question)});
             },
             (_, true) => quote! {
-                fields.add_field_method_set(#name, |_lua, s, #value_name| {
+                fields.add_field_method_set(#name, |lua, s, #value_name| {
                     #(#app_data)*
 
                     Ok(#self_ident #self_name #rust_args #question)});
 
             },
             (_, false) => quote! {
-                fields.add_field_method_get(#name, |_lua, s| {
+                fields.add_field_method_get(#name, |lua, s| {
                     #(#app_data)*
 
                     Ok(#self_ident #self_name #rust_args #question)});
@@ -334,7 +336,7 @@ pub fn mlua_bridge(attr: TokenStream, item: TokenStream) -> TokenStream {
     for c in consts {
         let name = c.ident;
         quote! {
-            fields.add_field_function_get(stringify!(#name)     , |_lua, _| Ok(Self::#name));
+            fields.add_field_function_get(stringify!(#name)     , |lua, _| Ok(Self::#name));
         }
         .to_tokens(&mut fields_impl);
     }
